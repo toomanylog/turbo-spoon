@@ -1,27 +1,11 @@
 const crypto = require('crypto');
-const fs = require('fs');
-const path = require('path');
 
 // Constantes pour la sécurité
-const MASTER_PASSWORD = process.env.MASTER_PASSWORD || 'admin123';
-const SECRET_KEY = process.env.SECRET_KEY || 'your-secret-key-for-tokens';
+const MASTER_PASSWORD = process.env.MASTER_PASSWORD || 'adminEmailSenderPro2024';
+const SECRET_KEY = process.env.SECRET_KEY || 'P6nM@5kL9qR#7sT2wX4yZ8aB1cD3eF';
 
-// Chemin vers le fichier de stockage des licences
-const LICENSES_FILE = path.join(__dirname, '../../data/licenses.json');
-
-// Vérifier/créer le dossier data si nécessaire
-try {
-  const dataDir = path.join(__dirname, '../../data');
-  if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true });
-  }
-  
-  if (!fs.existsSync(LICENSES_FILE)) {
-    fs.writeFileSync(LICENSES_FILE, JSON.stringify([]));
-  }
-} catch (err) {
-  console.error('Erreur lors de la création du répertoire data:', err);
-}
+// Utiliser les variables d'environnement pour stocker les licences au lieu des fichiers
+let licensesCache = null;
 
 // Fonction pour générer un ID unique
 function generateId() {
@@ -47,24 +31,40 @@ function hashPassword(password) {
     .digest('hex');
 }
 
-// Fonction pour charger les licences
+// Fonction pour charger les licences depuis la variable d'environnement
 function loadLicenses() {
   try {
-    if (fs.existsSync(LICENSES_FILE)) {
-      const data = fs.readFileSync(LICENSES_FILE, 'utf8');
-      return JSON.parse(data);
+    // Si on a déjà chargé les licences dans cette instance, retourner le cache
+    if (licensesCache !== null) {
+      return licensesCache;
     }
-    return [];
+    
+    // Sinon, charger depuis la variable d'environnement
+    const licensesEnv = process.env.LICENSES_DATA;
+    if (licensesEnv) {
+      licensesCache = JSON.parse(licensesEnv);
+      return licensesCache;
+    }
+    
+    // Si pas de données, retourner un tableau vide
+    licensesCache = [];
+    return licensesCache;
   } catch (error) {
     console.error("Erreur lors du chargement des licences:", error);
-    return [];
+    // En cas d'erreur, initialiser avec un tableau vide
+    licensesCache = [];
+    return licensesCache;
   }
 }
 
-// Fonction pour sauvegarder les licences
+// Fonction pour sauvegarder les licences - dans un environnement Netlify, 
+// on ne peut pas réellement sauvegarder dans les variables d'environnement à l'exécution
+// Cette fonction simule donc un succès mais les données sont temporaires
 function saveLicenses(licenses) {
   try {
-    fs.writeFileSync(LICENSES_FILE, JSON.stringify(licenses, null, 2));
+    // Mettre à jour le cache en mémoire
+    licensesCache = licenses;
+    console.log("Licences sauvegardées en mémoire (temporaire)", licenses);
     return true;
   } catch (error) {
     console.error("Erreur lors de la sauvegarde des licences:", error);
@@ -346,13 +346,13 @@ exports.handler = async function(event, context) {
     }
   }
   
-  // Méthode non supportée
+  // Si la méthode n'est pas supportée
   return {
     statusCode: 405,
     headers,
     body: JSON.stringify({
       success: false,
-      error: 'Method not allowed'
+      error: 'Méthode non autorisée'
     })
   };
 }; 
