@@ -45,6 +45,15 @@ export default function AdminPage() {
   // Fonction pour récupérer les licences
   const fetchLicenses = async () => {
     try {
+      // Récupérer le token d'authentification
+      const storedAuth = localStorage.getItem('emailSenderAuth');
+      if (!storedAuth) {
+        setError('Session expirée, veuillez vous reconnecter');
+        return;
+      }
+      
+      const auth = JSON.parse(storedAuth);
+      
       // Adaptation pour Netlify
       const apiUrl = process.env.NODE_ENV === 'production'
         ? '/.netlify/functions/licenses'
@@ -53,11 +62,15 @@ export default function AdminPage() {
       // S'assurer qu'il n'y a pas de barre oblique finale
       const cleanUrl = apiUrl.endsWith('/') ? apiUrl.slice(0, -1) : apiUrl;
         
-      const response = await fetch(cleanUrl);
+      const response = await fetch(cleanUrl, {
+        headers: {
+          'Authorization': `Bearer ${btoa(JSON.stringify(auth))}`
+        }
+      });
       
       // Vérifier si la réponse est OK
       if (!response.ok) {
-        throw new Error(`Erreur serveur: ${response.status} ${response.statusText}`);
+        throw new Error(`Erreur serveur: ${response.status}`);
       }
       
       const data = await response.json();
@@ -85,6 +98,15 @@ export default function AdminPage() {
     }
     
     try {
+      // Récupérer le token d'authentification
+      const storedAuth = localStorage.getItem('emailSenderAuth');
+      if (!storedAuth) {
+        setError('Session expirée, veuillez vous reconnecter');
+        return;
+      }
+      
+      const auth = JSON.parse(storedAuth);
+      
       // Adaptation pour Netlify
       const apiUrl = process.env.NODE_ENV === 'production'
         ? '/.netlify/functions/licenses'
@@ -95,13 +117,16 @@ export default function AdminPage() {
         
       const response = await fetch(cleanUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${btoa(JSON.stringify(auth))}`
+        },
         body: JSON.stringify(newLicense)
       });
       
       // Vérifier si la réponse est OK
       if (!response.ok) {
-        throw new Error(`Erreur serveur: ${response.status} ${response.statusText}`);
+        throw new Error(`Erreur serveur: ${response.status}`);
       }
       
       const result = await response.json();
@@ -122,7 +147,7 @@ export default function AdminPage() {
       }
     } catch (error) {
       console.error('Erreur lors de la création de la licence:', error);
-      setError(`Erreur de connexion: ${error.message}`);
+      setError(`Erreur lors de la création de la licence: ${error.message}`);
     }
   };
   
@@ -133,6 +158,15 @@ export default function AdminPage() {
     }
     
     try {
+      // Récupérer le token d'authentification
+      const storedAuth = localStorage.getItem('emailSenderAuth');
+      if (!storedAuth) {
+        setError('Session expirée, veuillez vous reconnecter');
+        return;
+      }
+      
+      const auth = JSON.parse(storedAuth);
+      
       // Adaptation pour Netlify
       const apiUrl = process.env.NODE_ENV === 'production'
         ? `/.netlify/functions/licenses?id=${id}`
@@ -142,12 +176,15 @@ export default function AdminPage() {
       const cleanUrl = apiUrl.endsWith('/') ? apiUrl.slice(0, -1) : apiUrl;
         
       const response = await fetch(cleanUrl, {
-        method: 'DELETE'
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${btoa(JSON.stringify(auth))}`
+        }
       });
       
       // Vérifier si la réponse est OK
       if (!response.ok) {
-        throw new Error(`Erreur serveur: ${response.status} ${response.statusText}`);
+        throw new Error(`Erreur serveur: ${response.status}`);
       }
       
       const result = await response.json();
@@ -160,7 +197,7 @@ export default function AdminPage() {
       }
     } catch (error) {
       console.error('Erreur lors de la suppression de la licence:', error);
-      setError(`Erreur de connexion: ${error.message}`);
+      setError(`Erreur lors de la suppression de la licence: ${error.message}`);
     }
   };
   
