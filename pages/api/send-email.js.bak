@@ -1,0 +1,276 @@
+import nodemailer from 'nodemailer';
+
+export default async function handler(req, res) {
+  if (req.method !== 'POST') {
+    return res.status(405).json({ success: false, error: 'Method not allowed' });
+  }
+
+  try {
+    const { 
+      smtpConfig, 
+      to, 
+      cc, 
+      bcc, 
+      subject, 
+      body, 
+      htmlBody, 
+      useHtml,
+      senderName
+    } = req.body;
+
+    if (!smtpConfig || !to || !subject) {
+      return res.status(400).json({ 
+        error: 'Configuration SMTP, destinataire et sujet sont requis' 
+      });
+    }
+
+    // Vérifier les limites de débit si elles sont configurées
+    if (smtpConfig.rateLimits && smtpConfig.rateLimits.enabled) {
+      // S'assurer que toutes les propriétés sont définies avec des valeurs par défaut
+      const safeRateLimits = {
+        perSecond: 0,
+        perMinute: 0,
+        perHour: 0,
+        perDay: 0,
+        enabled: true,
+        ...smtpConfig.rateLimits
+      };
+      
+      // Copier les limites nettoyées dans la configuration
+      smtpConfig.rateLimits = safeRateLimits;
+      
+      const limitCheckResult = checkRateLimits(smtpConfig);
+      if (!limitCheckResult.canSend) {
+        console.log(`Limite d'envoi dépassée: ${limitCheckResult.reason}`);
+        return res.status(429).json({ 
+          success: false, 
+          error: `Limite d'envoi dépassée: ${limitCheckResult.reason}`,
+          retryAfter: limitCheckResult.waitTime
+        });
+      }
+    }
+
+    // Créer un transporteur SMTP
+    const transporter = nodemailer.createTransport({
+      host: smtpConfig.host,
+      port: parseInt(smtpConfig.port),
+      secure: smtpConfig.encryption === 'ssl',
+      auth: {
+        user: smtpConfig.username,
+        pass: smtpConfig.password
+      },
+      tls: {
+        rejectUnauthorized: false // Important pour les certificats auto-signés
+      }
+    });
+
+    // Formater l'expéditeur avec un nom si disponible
+    const fromAddress = senderName || smtpConfig.senderName 
+      ? `"${senderName || smtpConfig.senderName}" <${smtpConfig.username}>`
+      : smtpConfig.username;
+
+    // Options de l'email
+    const mailOptions = {
+      from: fromAddress,
+      to: to,
+      cc: cc || undefined,
+      bcc: bcc || undefined,
+      subject: subject,
+      text: useHtml ? undefined : body,
+      html: useHtml ? htmlBody : undefined
+    };
+
+    // Logs des tentatives
+    console.log(`Tentative d'envoi via ${smtpConfig.host}:${smtpConfig.port}`);
+    
+    // Envoyer l'email
+    const info = await transporter.sendMail(mailOptions);
+
+    // Incrémenter les compteurs de limites
+    if (smtpConfig.rateLimits && smtpConfig.rateLimits.enabled) {
+      updateRateLimitCounters(smtpConfig);
+    }
+
+    // Retourner le résultat
+    return res.status(200).json({ 
+      success: true, 
+      messageId: info.messageId
+    });
+
+  } catch (error) {
+    console.error('Erreur d\'envoi d\'email:', error);
+    return res.status(500).json({ 
+      success: false,
+      error: error.message
+    });
+  }
+}
+
+// Fonction pour convertir le HTML en texte (simplifiée)
+function htmlToText(html) {
+  return html
+    .replace(/<[^>]*>/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Fonctions pour gérer les limites de débit
+function checkRateLimits(smtpConfig) {
+  if (!smtpConfig.rateLimits || !smtpConfig.rateLimits.enabled) {
+    return { canSend: true };
+  }
+  
+  const limits = smtpConfig.rateLimits;
+  
+  // Logs pour debugging
+  console.log('SMTP Config:', smtpConfig.name);
+  console.log('Rate Limits:', JSON.stringify(limits));
+  
+  // Initialiser le système de jetons (token bucket) s'il n'existe pas
+  global.tokenBuckets = global.tokenBuckets || {};
+  const bucketKey = `smtp-${smtpConfig.name || 'default'}`;
+  
+  if (!global.tokenBuckets[bucketKey]) {
+    global.tokenBuckets[bucketKey] = {
+      // Initialiser avec les capacités maximales au démarrage
+      tokens: {
+        perSecond: limits.perSecond > 0 ? limits.perSecond : Number.MAX_SAFE_INTEGER,
+        perMinute: limits.perMinute > 0 ? limits.perMinute : Number.MAX_SAFE_INTEGER,
+        perHour: limits.perHour > 0 ? limits.perHour : Number.MAX_SAFE_INTEGER,
+        perDay: limits.perDay > 0 ? limits.perDay : Number.MAX_SAFE_INTEGER
+      },
+      lastRefill: {
+        perSecond: Date.now(),
+        perMinute: Date.now(),
+        perHour: Date.now(),
+        perDay: Date.now()
+      }
+    };
+  }
+  
+  const bucket = global.tokenBuckets[bucketKey];
+  const now = Date.now();
+  
+  // Calculer le renouvellement des jetons basé sur le temps écoulé
+  if (limits.perSecond > 0) {
+    const secondsElapsed = (now - bucket.lastRefill.perSecond) / 1000;
+    if (secondsElapsed > 0) {
+      // Ajouter des jetons basés sur le temps écoulé
+      const tokensToAdd = secondsElapsed * limits.perSecond;
+      bucket.tokens.perSecond = Math.min(limits.perSecond, bucket.tokens.perSecond + tokensToAdd);
+      bucket.lastRefill.perSecond = now;
+    }
+  }
+  
+  if (limits.perMinute > 0) {
+    const minutesElapsed = (now - bucket.lastRefill.perMinute) / 60000;
+    if (minutesElapsed > 0) {
+      const tokensToAdd = minutesElapsed * limits.perMinute;
+      bucket.tokens.perMinute = Math.min(limits.perMinute, bucket.tokens.perMinute + tokensToAdd);
+      bucket.lastRefill.perMinute = now;
+    }
+  }
+  
+  if (limits.perHour > 0) {
+    const hoursElapsed = (now - bucket.lastRefill.perHour) / 3600000;
+    if (hoursElapsed > 0) {
+      const tokensToAdd = hoursElapsed * limits.perHour;
+      bucket.tokens.perHour = Math.min(limits.perHour, bucket.tokens.perHour + tokensToAdd);
+      bucket.lastRefill.perHour = now;
+    }
+  }
+  
+  if (limits.perDay > 0) {
+    const daysElapsed = (now - bucket.lastRefill.perDay) / 86400000;
+    if (daysElapsed > 0) {
+      const tokensToAdd = daysElapsed * limits.perDay;
+      bucket.tokens.perDay = Math.min(limits.perDay, bucket.tokens.perDay + tokensToAdd);
+      bucket.lastRefill.perDay = now;
+    }
+  }
+  
+  // Afficher l'état actuel du bucket pour débogage
+  console.log('Jetons disponibles:', {
+    perSecond: bucket.tokens.perSecond,
+    perMinute: bucket.tokens.perMinute,
+    perHour: bucket.tokens.perHour,
+    perDay: bucket.tokens.perDay
+  });
+  
+  // Vérifier s'il y a assez de jetons disponibles
+  if (limits.perSecond > 0 && bucket.tokens.perSecond < 1) {
+    const waitTime = (1 - bucket.tokens.perSecond) * (1000 / limits.perSecond);
+    return { 
+      canSend: false, 
+      reason: `Limite par seconde atteinte (${limits.perSecond}/s)`, 
+      waitTime: Math.ceil(waitTime) 
+    };
+  }
+  
+  if (limits.perMinute > 0 && bucket.tokens.perMinute < 1) {
+    const waitTime = (1 - bucket.tokens.perMinute) * (60000 / limits.perMinute);
+    return { 
+      canSend: false, 
+      reason: `Limite par minute atteinte (${limits.perMinute}/min)`, 
+      waitTime: Math.ceil(waitTime) 
+    };
+  }
+  
+  if (limits.perHour > 0 && bucket.tokens.perHour < 1) {
+    const waitTime = (1 - bucket.tokens.perHour) * (3600000 / limits.perHour);
+    return { 
+      canSend: false, 
+      reason: `Limite par heure atteinte (${limits.perHour}/h)`, 
+      waitTime: Math.ceil(waitTime) 
+    };
+  }
+  
+  if (limits.perDay > 0 && bucket.tokens.perDay < 1) {
+    const waitTime = (1 - bucket.tokens.perDay) * (86400000 / limits.perDay);
+    return { 
+      canSend: false, 
+      reason: `Limite quotidienne atteinte (${limits.perDay}/jour)`, 
+      waitTime: Math.ceil(waitTime) 
+    };
+  }
+  
+  return { canSend: true };
+}
+
+function updateRateLimitCounters(smtpConfig) {
+  if (!smtpConfig.rateLimits || !smtpConfig.rateLimits.enabled) {
+    return;
+  }
+  
+  // Récupérer le bucket de jetons
+  global.tokenBuckets = global.tokenBuckets || {};
+  const bucketKey = `smtp-${smtpConfig.name || 'default'}`;
+  
+  if (!global.tokenBuckets[bucketKey]) {
+    // Si le bucket n'existe pas, il est déjà initialisé par checkRateLimits
+    return;
+  }
+  
+  const bucket = global.tokenBuckets[bucketKey];
+  
+  // Consommer un jeton pour chaque période
+  if (smtpConfig.rateLimits.perSecond > 0) {
+    bucket.tokens.perSecond = Math.max(0, bucket.tokens.perSecond - 1);
+  }
+  
+  if (smtpConfig.rateLimits.perMinute > 0) {
+    bucket.tokens.perMinute = Math.max(0, bucket.tokens.perMinute - 1);
+  }
+  
+  if (smtpConfig.rateLimits.perHour > 0) {
+    bucket.tokens.perHour = Math.max(0, bucket.tokens.perHour - 1);
+  }
+  
+  if (smtpConfig.rateLimits.perDay > 0) {
+    bucket.tokens.perDay = Math.max(0, bucket.tokens.perDay - 1);
+  }
+  
+  // Enregistrer l'heure d'envoi pour le calcul du taux
+  global.lastSmtpSendTime = global.lastSmtpSendTime || {};
+  global.lastSmtpSendTime[smtpConfig.name] = Date.now();
+} 

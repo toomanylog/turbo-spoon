@@ -1,0 +1,27 @@
+{
+  "name": "web-sender",
+  "version": "1.0.0",
+  "description": "Application d'envoi d'emails via SMTP",
+  "main": "index.js",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "export": "next export",
+    "netlify": "npm run build && npm run export",
+    "lint": "next lint"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "autoprefixer": "^10.4.21",
+    "lucide-react": "^0.294.0",
+    "next": "^14.0.3",
+    "nodemailer": "^7.0.2",
+    "postcss": "^8.5.3",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "tailwindcss": "^3.3.0"
+  }
+}
