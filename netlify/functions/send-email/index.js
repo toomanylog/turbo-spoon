@@ -129,20 +129,20 @@ function createTransporter(smtpConfig) {
       pass: smtpConfig.password
     },
     // Timeouts très longs
-    connectionTimeout: 60000, // 60 secondes
-    greetingTimeout: 60000,   // 60 secondes
-    socketTimeout: 120000,    // 120 secondes
+    connectionTimeout: 120000, // 120 secondes (augmenté)
+    greetingTimeout: 120000,   // 120 secondes (augmenté)
+    socketTimeout: 240000,    // 240 secondes (augmenté)
     // Pas de mise en pool pour éviter les problèmes
     pool: false,
-    // Options TLS permissives
+    // Options TLS très permissives (pas de vérification de certificat)
     tls: {
       rejectUnauthorized: false,
       minVersion: 'TLSv1'
     },
     // Accepter différents types de connexions
-    ignoreTLS: true,
+    ignoreTLS: false, // Changé pour forcer TLS
     opportunisticTLS: true,
-    requireTLS: false,
+    requireTLS: false, // Garde cette option flexible
     // Logs détaillés
     debug: true,
     logger: true
@@ -150,6 +150,41 @@ function createTransporter(smtpConfig) {
   
   console.log("API - Configuration du transporteur SMTP:", transporterConfig);
   return nodemailer.createTransport(transporterConfig);
+}
+
+// Fonction pour tester directement la connectivité SMTP
+async function testSmtpConnection(smtpConfig) {
+  try {
+    console.log("API - Test de connexion SMTP directe...");
+    
+    // Créer un transporteur minimal pour tester la connexion
+    const testTransporter = nodemailer.createTransport({
+      host: smtpConfig.host,
+      port: parseInt(smtpConfig.port),
+      secure: parseInt(smtpConfig.port) === 465,
+      auth: {
+        user: smtpConfig.username,
+        pass: smtpConfig.password
+      },
+      connectionTimeout: 10000, // timeout court pour le test
+      debug: true,
+      tls: {
+        rejectUnauthorized: false
+      }
+    });
+    
+    // Vérifier la connexion sans envoyer d'email
+    const verification = await testTransporter.verify();
+    console.log("API - Test de connexion SMTP réussi:", verification);
+    return { success: true };
+  } catch (error) {
+    console.error("API - Échec du test de connexion SMTP:", error.message);
+    return { 
+      success: false, 
+      error: error.message,
+      code: error.code || null
+    };
+  }
 }
 
 exports.handler = async (event, context) => {
@@ -310,6 +345,14 @@ exports.handler = async (event, context) => {
     try {
       console.log("API - Tentative d'envoi réel en cours...");
       
+      // Test de connexion avant d'essayer d'envoyer
+      const connectionTest = await testSmtpConnection(smtpConfig);
+      if (!connectionTest.success) {
+        console.log("API - Le test de connexion a échoué, tentative d'envoi quand même");
+      } else {
+        console.log("API - Le test de connexion a réussi, on continue avec l'envoi");
+      }
+      
       // Créer le transporteur avec des options permissives
       const transporter = createTransporter(smtpConfig);
       
@@ -350,9 +393,25 @@ exports.handler = async (event, context) => {
       });
       
       // Essayer d'envoyer l'email sans vérification préalable
-      const info = await transporter.sendMail(mailOptions);
-      
-      console.log("API - Email envoyé avec succès:", info.messageId);
+      let info;
+      try {
+        info = await transporter.sendMail(mailOptions);
+        console.log("API - Email envoyé avec succès:", info.messageId);
+      }
+      catch (mailError) {
+        console.log("API - Premier échec d'envoi, tentative avec configuration alternative 1");
+        
+        // Tentative 1: Port 465 avec SSL
+        const altConfig1 = {
+          ...smtpConfig,
+          port: 465, 
+          encryption: 'ssl'
+        };
+        
+        const altTransporter1 = createTransporter(altConfig1);
+        info = await altTransporter1.sendMail(mailOptions);
+        console.log("API - Email envoyé avec succès via port 465/SSL");
+      }
       
       // Mettre à jour les compteurs de limite de débit
       if (smtpConfig.rateLimits && smtpConfig.rateLimits.enabled) {
@@ -378,24 +437,45 @@ exports.handler = async (event, context) => {
         errorDetails += ` (Code: ${mailError.code})`;
       }
       
-      // Essayer une autre méthode si la première a échoué
+      // Essayer d'autres méthodes si les premières ont échoué
       try {
-        if (errorDetails.includes("ESOCKET") || errorDetails.includes("ETIMEDOUT") || errorDetails.includes("connect")) {
-          console.log("API - Tentative de connexion alternative...");
+        if (errorDetails.includes("ESOCKET") || errorDetails.includes("ETIMEDOUT") || errorDetails.includes("connect") || errorDetails.includes("ECONNREFUSED")) {
+          console.log("API - Tentative avec configuration alternative 2");
           
-          // Configurer un transporteur alternatif avec des options différentes
-          const altConfig = {
+          // Tentative 2: Port 587 avec STARTTLS
+          const altConfig2 = {
             ...smtpConfig,
-            port: smtpConfig.encryption === 'ssl' ? 465 : 587, // Tenter l'autre port standard
+            port: 587,
+            secure: false,
+            encryption: 'tls'
           };
           
-          const altTransporter = createTransporter(altConfig);
+          // Configuration spécifique avec TLS désactivé
+          const altTransporter2Config = {
+            host: altConfig2.host,
+            port: parseInt(altConfig2.port),
+            secure: false,
+            auth: {
+              user: altConfig2.username,
+              pass: altConfig2.password
+            },
+            connectionTimeout: 120000,
+            greetingTimeout: 120000,
+            socketTimeout: 240000,
+            tls: {
+              rejectUnauthorized: false
+            },
+            ignoreTLS: true,
+            requireTLS: false,
+            debug: true,
+            logger: true
+          };
           
-          // Envoyer l'email avec le transporteur alternatif
-          console.log("API - Tentative d'envoi via port alternatif:", altConfig.port);
-          const altInfo = await altTransporter.sendMail(mailOptions);
+          console.log("API - Tentative d'envoi via config alternative 2:", altConfig2.port);
+          const altTransporter2 = nodemailer.createTransport(altTransporter2Config);
+          const altInfo2 = await altTransporter2.sendMail(mailOptions);
           
-          console.log("API - Email envoyé avec succès via méthode alternative:", altInfo.messageId);
+          console.log("API - Email envoyé avec succès via méthode alternative 2:", altInfo2.messageId);
           
           if (smtpConfig.rateLimits && smtpConfig.rateLimits.enabled) {
             updateRateLimitCounters();
@@ -406,24 +486,85 @@ exports.handler = async (event, context) => {
             headers,
             body: JSON.stringify({
               success: true,
-              message: "Email envoyé avec succès (méthode alternative)",
-              messageId: altInfo.messageId,
+              message: "Email envoyé avec succès (méthode alternative 2)",
+              messageId: altInfo2.messageId,
               alternative: true
             })
           };
         }
-      } catch (altError) {
-        console.error("API - Échec de la méthode alternative:", altError.message);
+      } catch (altError2) {
+        console.error("API - Échec de la méthode alternative 2:", altError2.message);
+        
+        try {
+          // Tentative 3: Utiliser le port 25 (port SMTP par défaut)
+          console.log("API - Tentative avec configuration alternative 3 (port 25)");
+          
+          const altConfig3 = {
+            ...smtpConfig,
+            port: 25,
+            secure: false
+          };
+          
+          const altTransporter3Config = {
+            host: altConfig3.host,
+            port: 25,
+            secure: false,
+            auth: {
+              user: altConfig3.username,
+              pass: altConfig3.password
+            },
+            connectionTimeout: 120000,
+            greetingTimeout: 120000,
+            socketTimeout: 240000,
+            tls: {
+              rejectUnauthorized: false
+            },
+            ignoreTLS: true,
+            debug: true
+          };
+          
+          console.log("API - Tentative d'envoi via port 25");
+          const altTransporter3 = nodemailer.createTransport(altTransporter3Config);
+          const altInfo3 = await altTransporter3.sendMail(mailOptions);
+          
+          console.log("API - Email envoyé avec succès via port 25:", altInfo3.messageId);
+          
+          if (smtpConfig.rateLimits && smtpConfig.rateLimits.enabled) {
+            updateRateLimitCounters();
+          }
+          
+          return {
+            statusCode: 200,
+            headers,
+            body: JSON.stringify({
+              success: true,
+              message: "Email envoyé avec succès (port 25)",
+              messageId: altInfo3.messageId,
+              alternative: true
+            })
+          };
+        } catch (altError3) {
+          console.error("API - Échec de la méthode alternative 3 (port 25):", altError3.message);
+          // Continuer vers l'erreur finale
+        }
       }
       
-      // Si tout échoue, retourner l'erreur originale
+      // Si tout échoue, retourner l'erreur originale avec plus de détails
+      const connectionTestFinal = await testSmtpConnection(smtpConfig);
       return {
         statusCode: 500,
         headers,
         body: JSON.stringify({
           success: false,
           error: "Impossible de se connecter au serveur SMTP",
-          details: errorDetails
+          details: errorDetails,
+          serverInfo: {
+            host: smtpConfig.host,
+            port: smtpConfig.port,
+            encryption: smtpConfig.encryption
+          },
+          connectionTest: connectionTestFinal,
+          troubleshooting: "Vérifiez que le serveur SMTP est accessible, que les identifiants sont corrects, et que les ports ne sont pas bloqués par un pare-feu."
         })
       };
     }
