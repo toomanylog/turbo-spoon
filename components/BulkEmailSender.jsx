@@ -694,12 +694,12 @@ const BulkEmailSender = ({ onClose, smtpConfig, initialEmailData }) => {
           // Préparer les données pour l'API
           const emailPayload = {
             smtpConfig: {
-              host: smtpConfig.host,
-              port: smtpConfig.port,
-              username: smtpConfig.username,
-              password: smtpConfig.password,
-              senderName: smtpConfig.senderName,
-              encryption: smtpConfig.encryption,
+              host: smtpConfig.host || '',
+              port: smtpConfig.port || '',
+              username: smtpConfig.username || '',
+              password: smtpConfig.password || '',
+              senderName: smtpConfig.senderName || '',
+              encryption: smtpConfig.encryption || 'tls',
               rateLimits: smtpConfig.rateLimits ? {
                 perSecond: smtpConfig.rateLimits.perSecond || 0,
                 perMinute: smtpConfig.rateLimits.perMinute || 0,
@@ -708,14 +708,45 @@ const BulkEmailSender = ({ onClose, smtpConfig, initialEmailData }) => {
                 enabled: smtpConfig.rateLimits.enabled || false
               } : undefined
             },
-            to: recipient.email,
-            subject: parsedSubject,
-            body: !emailData.useHtml ? textContent : undefined,
-            htmlBody: emailData.useHtml ? htmlContent : undefined,
-            useHtml: emailData.useHtml,
-            senderName: smtpConfig.senderName,
+            to: recipient.email || '',
+            subject: parsedSubject || '',
+            body: !emailData.useHtml ? textContent || '' : undefined,
+            htmlBody: emailData.useHtml ? htmlContent || '' : undefined,
+            useHtml: !!emailData.useHtml,
+            senderName: smtpConfig.senderName || '',
             testMode: false  // Forcer à false pour toujours envoyer de vrais emails
           };
+          
+          // Log détaillé pour débogage
+          console.log("Envoi de la requête API - configuration SMTP:", {
+            host: emailPayload.smtpConfig.host,
+            port: emailPayload.smtpConfig.port,
+            username: emailPayload.smtpConfig.username,
+            encryption: emailPayload.smtpConfig.encryption,
+            hasPassword: !!emailPayload.smtpConfig.password
+          });
+          
+          // Vérifier que la charge utile est valide avant d'envoyer
+          if (!emailPayload.smtpConfig.host || !emailPayload.smtpConfig.port || 
+              !emailPayload.smtpConfig.username || !emailPayload.smtpConfig.password) {
+            throw new Error("Configuration SMTP incomplète. Veuillez vérifier tous les champs.");
+          }
+
+          if (!emailPayload.to) {
+            throw new Error("Adresse email du destinataire manquante.");
+          }
+
+          if (!emailPayload.subject) {
+            throw new Error("Sujet de l'email manquant.");
+          }
+
+          if (emailPayload.useHtml && !emailPayload.htmlBody) {
+            throw new Error("Contenu HTML manquant.");
+          }
+
+          if (!emailPayload.useHtml && !emailPayload.body) {
+            throw new Error("Contenu texte manquant.");
+          }
           
           // Envoyer l'email
           console.log("Envoi de la requête API...");
@@ -728,35 +759,47 @@ const BulkEmailSender = ({ onClose, smtpConfig, initialEmailData }) => {
           // S'assurer qu'il n'y a pas de barre oblique finale
           const cleanUrl = apiUrl.endsWith('/') ? apiUrl.slice(0, -1) : apiUrl;
           
-          const response = await fetch(cleanUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(emailPayload)
-          });
-          
-          console.log("Réponse API reçue:", response.status);
-          const result = await response.json();
-          console.log("Résultat de l'API:", result);
-          
-          if (response.ok && result.success) {
-            success = true;
-            console.log("Email envoyé avec succès");
-            // Enregistrer cet envoi réussi dans les compteurs de limites
-            recordSuccessfulSend();
-            // Mettre à jour le statut de réussite immédiatement pour chaque email
-            setSendingStatus(prev => {
-              const newSuccessCount = prev.success + 1;
-              console.log("Incrémentation du compteur de succès:", { avant: prev.success, après: newSuccessCount });
-              return {
-                ...prev,
-                success: newSuccessCount,
-                currentStatus: `${newSuccessCount} emails envoyés sur ${totalRecipients}`
-              };
+          try {
+            const response = await fetch(cleanUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(emailPayload)
             });
-          } else {
-            errorMessage = result.message || result.error || "Échec de l'envoi";
-            console.error("Échec de l'envoi:", errorMessage);
-            throw new Error(errorMessage);
+            
+            console.log("Réponse API reçue:", response.status);
+            
+            if (!response.ok) {
+              // Récupérer le message d'erreur du serveur
+              const errorData = await response.json().catch(() => ({}));
+              throw new Error(errorData.error || `Erreur serveur: ${response.status}`);
+            }
+            
+            const result = await response.json();
+            console.log("Résultat de l'API:", result);
+            
+            if (result.success) {
+              success = true;
+              console.log("Email envoyé avec succès");
+              // Enregistrer cet envoi réussi dans les compteurs de limites
+              recordSuccessfulSend();
+              // Mettre à jour le statut de réussite immédiatement pour chaque email
+              setSendingStatus(prev => {
+                const newSuccessCount = prev.success + 1;
+                console.log("Incrémentation du compteur de succès:", { avant: prev.success, après: newSuccessCount });
+                return { 
+                  ...prev,
+                  success: newSuccessCount,
+                  currentStatus: `${newSuccessCount} emails envoyés sur ${totalRecipients}`
+                };
+              });
+            } else {
+              errorMessage = result.error || result.message || "Échec de l'envoi sans détails";
+              console.error("Échec de l'envoi:", errorMessage);
+              throw new Error(errorMessage);
+            }
+          } catch (fetchError) {
+            console.error("Erreur de réseau:", fetchError);
+            throw new Error(`Erreur réseau: ${fetchError.message}`);
           }
         } catch (error) {
           console.error(`Erreur lors de l'envoi à ${recipient.email}:`, error);
