@@ -119,47 +119,41 @@ function createTransporter(smtpConfig) {
     secureOption = true;
   }
   
-  // Configuration du transporteur
+  // Configuration du transporteur avec des options très permissives
   const transporterConfig = {
     host: smtpConfig.host,
     port: parseInt(smtpConfig.port),
-    secure: secureOption, // true pour 465, false pour les autres ports
+    secure: secureOption,
     auth: {
       user: smtpConfig.username,
       pass: smtpConfig.password
     },
-    // Augmenter le timeout pour les serveurs SMTP plus lents ou restrictifs
-    connectionTimeout: 10000, // 10 secondes
-    greetingTimeout: 10000,
-    socketTimeout: 15000
+    // Timeouts très longs
+    connectionTimeout: 60000, // 60 secondes
+    greetingTimeout: 60000,   // 60 secondes
+    socketTimeout: 120000,    // 120 secondes
+    // Pas de mise en pool pour éviter les problèmes
+    pool: false,
+    // Options TLS permissives
+    tls: {
+      rejectUnauthorized: false,
+      minVersion: 'TLSv1'
+    },
+    // Accepter différents types de connexions
+    ignoreTLS: true,
+    opportunisticTLS: true,
+    requireTLS: false,
+    // Logs détaillés
+    debug: true,
+    logger: true
   };
   
-  // Pour TLS explicite (port 587), ajouter des options TLS
-  if (smtpConfig.encryption === 'tls' || parseInt(smtpConfig.port) === 587) {
-    transporterConfig.tls = {
-      ciphers: 'SSLv3',
-      rejectUnauthorized: false // Désactiver la vérification du certificat (à utiliser avec prudence)
-    };
-    
-    // Configuration explicite pour STARTTLS
-    transporterConfig.requireTLS = true;
-    transporterConfig.debug = true; // Activer les logs de debug pour nodemailer
-  }
-  
-  console.log("API - Création du transporteur SMTP avec config:", {
-    host: smtpConfig.host,
-    port: transporterConfig.port,
-    secure: secureOption,
-    encryption: smtpConfig.encryption,
-    requireTLS: transporterConfig.requireTLS || false,
-    timeout: transporterConfig.connectionTimeout
-  });
-  
+  console.log("API - Configuration du transporteur SMTP:", transporterConfig);
   return nodemailer.createTransport(transporterConfig);
 }
 
 exports.handler = async (event, context) => {
-  // En-têtes CORS pour permettre les requêtes cross-origin
+  // En-têtes CORS pour les requêtes cross-origin
   const headers = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type',
@@ -169,11 +163,7 @@ exports.handler = async (event, context) => {
   
   // Gérer les requêtes OPTIONS (pre-flight)
   if (event.httpMethod === 'OPTIONS') {
-    return {
-      statusCode: 204,
-      headers,
-      body: ''
-    };
+    return { statusCode: 204, headers, body: '' };
   }
   
   if (event.httpMethod !== 'POST') {
@@ -200,7 +190,7 @@ exports.handler = async (event, context) => {
     let requestData;
     try {
       requestData = JSON.parse(event.body);
-      console.log("API - Données reçues:", JSON.stringify({
+      console.log("API - Données reçues:", {
         to: requestData.to,
         subject: requestData.subject,
         smtpConfig: requestData.smtpConfig ? {
@@ -208,28 +198,21 @@ exports.handler = async (event, context) => {
           port: requestData.smtpConfig.port,
           username: requestData.smtpConfig.username
         } : null
-      }));
+      });
     } catch (err) {
       console.log("API - Erreur de parsing JSON:", err.message);
       return {
         statusCode: 400,
         headers,
-        body: JSON.stringify({ success: false, error: 'Format JSON invalide', details: err.message })
+        body: JSON.stringify({
+          success: false,
+          error: 'Format JSON invalide',
+          details: err.message
+        })
       };
     }
     
-    const { 
-      smtpConfig, 
-      to, 
-      cc, 
-      bcc, 
-      subject, 
-      body, 
-      htmlBody, 
-      useHtml,
-      senderName,
-      testMode  // Nouveau paramètre pour tester sans réellement envoyer
-    } = requestData;
+    const { smtpConfig, to, cc, bcc, subject, body, htmlBody, useHtml, senderName, testMode } = requestData;
 
     // Validation des données
     if (!smtpConfig) {
@@ -270,16 +253,15 @@ exports.handler = async (event, context) => {
       return {
         statusCode: 400,
         headers,
-        body: JSON.stringify({ 
-          success: false, 
-          error: 'Configuration SMTP incomplète (host, port, username, password requis)' 
+        body: JSON.stringify({
+          success: false,
+          error: 'Configuration SMTP incomplète (host, port, username, password requis)'
         })
       };
     }
 
-    // Vérifier les limites de débit si elles sont configurées
+    // Vérifier les limites de débit
     if (smtpConfig.rateLimits && smtpConfig.rateLimits.enabled) {
-      // S'assurer que toutes les propriétés sont définies avec des valeurs par défaut
       const safeRateLimits = {
         perSecond: 0,
         perMinute: 0,
@@ -296,10 +278,10 @@ exports.handler = async (event, context) => {
       if (!limitCheck.canSend) {
         console.log(`API - Limite de débit atteinte: ${limitCheck.reason}, attente: ${limitCheck.waitTime}ms`);
         return {
-          statusCode: 429, // Too Many Requests
+          statusCode: 429,
           headers,
-          body: JSON.stringify({ 
-            success: false, 
+          body: JSON.stringify({
+            success: false,
             error: limitCheck.reason,
             retryAfter: limitCheck.waitTime
           })
@@ -310,13 +292,8 @@ exports.handler = async (event, context) => {
     // Mode test - simuler un envoi sans réellement l'effectuer
     if (testMode === true) {
       console.log("API - Mode TEST activé - L'email ne sera pas réellement envoyé");
-      
-      // Simuler un temps de traitement
       await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      // Simuler un ID de message
       const fakeMessageId = `test-${Date.now()}@simulated.mail`;
-      
       return {
         statusCode: 200,
         headers,
@@ -329,36 +306,26 @@ exports.handler = async (event, context) => {
       };
     }
     
+    // Mode envoi réel
     try {
-      // Configuration du transporteur SMTP
+      console.log("API - Tentative d'envoi réel en cours...");
+      
+      // Créer le transporteur avec des options permissives
       const transporter = createTransporter(smtpConfig);
       
-      // Log pour vérifier si le transporteur a été créé correctement
-      console.log("API - Transporteur SMTP créé avec succès");
-      
-      // Vérification de connexion au serveur SMTP
-      try {
-        console.log("API - Vérification de la connexion au serveur SMTP...");
-        await transporter.verify();
-        console.log("API - Connexion au serveur SMTP réussie");
-      } catch (verifyError) {
-        console.error("API - Échec de vérification de la connexion SMTP:", verifyError);
-        return {
-          statusCode: 500,
-          headers,
-          body: JSON.stringify({ 
-            success: false, 
-            error: "Impossible de se connecter au serveur SMTP", 
-            details: verifyError.message 
-          })
-        };
-      }
-      
-      // Préparation de l'email
+      // Préparer les options d'email
       const mailOptions = {
         from: senderName ? `"${senderName}" <${smtpConfig.username}>` : smtpConfig.username,
         to: to,
         subject: subject,
+        // Options supplémentaires
+        headers: {
+          'X-Priority': '3',
+          'X-MSMail-Priority': 'Normal',
+          'Importance': 'Normal',
+        },
+        disableFileAccess: true,
+        disableUrlAccess: true
       };
       
       // Ajouter CC et BCC s'ils sont présents
@@ -368,14 +335,13 @@ exports.handler = async (event, context) => {
       // Configurer le corps du message selon le format
       if (useHtml) {
         mailOptions.html = htmlBody;
-        // Ajouter aussi une version texte pour les clients qui ne supportent pas HTML
+        // Version texte alternative
         mailOptions.text = body || htmlBody.replace(/<[^>]*>/g, '');
       } else {
         mailOptions.text = body;
       }
       
-      console.log("API - Envoi de l'email en cours...");
-      console.log("API - Options:", {
+      console.log("API - Envoi de l'email:", {
         from: mailOptions.from,
         to: mailOptions.to,
         subject: mailOptions.subject,
@@ -383,7 +349,7 @@ exports.handler = async (event, context) => {
         hasText: !!mailOptions.text
       });
       
-      // Envoyer l'email
+      // Essayer d'envoyer l'email sans vérification préalable
       const info = await transporter.sendMail(mailOptions);
       
       console.log("API - Email envoyé avec succès:", info.messageId);
@@ -406,18 +372,57 @@ exports.handler = async (event, context) => {
     } catch (mailError) {
       console.error("API - Erreur lors de l'envoi de l'email:", mailError);
       
-      // Détails spécifiques des erreurs NodeMailer
-      let errorDetails = mailError.message;
+      // Message d'erreur détaillé
+      let errorDetails = mailError.message || "Erreur inconnue";
       if (mailError.code) {
         errorDetails += ` (Code: ${mailError.code})`;
       }
       
+      // Essayer une autre méthode si la première a échoué
+      try {
+        if (errorDetails.includes("ESOCKET") || errorDetails.includes("ETIMEDOUT") || errorDetails.includes("connect")) {
+          console.log("API - Tentative de connexion alternative...");
+          
+          // Configurer un transporteur alternatif avec des options différentes
+          const altConfig = {
+            ...smtpConfig,
+            port: smtpConfig.encryption === 'ssl' ? 465 : 587, // Tenter l'autre port standard
+          };
+          
+          const altTransporter = createTransporter(altConfig);
+          
+          // Envoyer l'email avec le transporteur alternatif
+          console.log("API - Tentative d'envoi via port alternatif:", altConfig.port);
+          const altInfo = await altTransporter.sendMail(mailOptions);
+          
+          console.log("API - Email envoyé avec succès via méthode alternative:", altInfo.messageId);
+          
+          if (smtpConfig.rateLimits && smtpConfig.rateLimits.enabled) {
+            updateRateLimitCounters();
+          }
+          
+          return {
+            statusCode: 200,
+            headers,
+            body: JSON.stringify({
+              success: true,
+              message: "Email envoyé avec succès (méthode alternative)",
+              messageId: altInfo.messageId,
+              alternative: true
+            })
+          };
+        }
+      } catch (altError) {
+        console.error("API - Échec de la méthode alternative:", altError.message);
+      }
+      
+      // Si tout échoue, retourner l'erreur originale
       return {
         statusCode: 500,
         headers,
-        body: JSON.stringify({ 
-          success: false, 
-          error: "Échec de l'envoi de l'email", 
+        body: JSON.stringify({
+          success: false,
+          error: "Impossible de se connecter au serveur SMTP",
           details: errorDetails
         })
       };
@@ -427,11 +432,11 @@ exports.handler = async (event, context) => {
     return {
       statusCode: 500,
       headers,
-      body: JSON.stringify({ 
-        success: false, 
-        error: "Une erreur interne est survenue", 
+      body: JSON.stringify({
+        success: false,
+        error: "Une erreur interne est survenue",
         details: error.message
       })
     };
   }
-}; 
+};
