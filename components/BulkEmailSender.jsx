@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Settings, AlertTriangle, Check, RefreshCw, Info, FilePlus, Users, ChevronDown, ChevronUp, Trash, Pause, Play, Clock, Save, X } from 'lucide-react';
+import { Send, Settings, AlertTriangle, Check, RefreshCw, Info, FilePlus, Users, ChevronDown, ChevronUp, Trash, Pause, Play, Clock, Save, X, CheckCircle } from 'lucide-react';
 import CsvImporter from './CsvImporter';
 import { parseTemplate, parseHtmlTemplate, extractTemplateVariables } from '../utils/templateParser';
 
@@ -33,7 +33,7 @@ const BulkEmailSender = ({ onClose, smtpConfig, initialEmailData }) => {
     batchSize: 10,
     delayBetweenBatches: 5,
     sendingMode: 'all', // 'all' ou 'batch'
-    testMode: false     // Nouvelle option pour le mode test
+    testMode: false     // Toujours désactivé par défaut
   });
   const [error, setError] = useState(null);
   const [warnings, setWarnings] = useState([]);
@@ -516,13 +516,26 @@ const BulkEmailSender = ({ onClose, smtpConfig, initialEmailData }) => {
     setStep(3);
   };
 
-  // Envoyer les emails en masse
+  // Fonction pour démarrer l'envoi en masse
   const startBulkSend = async (startFromIndex = 0) => {
     // Si on a déjà un envoi en cours et qu'il n'est pas en pause, ne pas démarrer un nouvel envoi
     if (sendingStatus.inProgress && !sendingStatus.isPaused) {
       console.log("Un envoi est déjà en cours");
       return;
     }
+    
+    // Confirmation avant envoi si c'est un nouvel envoi
+    if (startFromIndex === 0 && !sendingStatus.id) {
+      if (!confirm(`IMPORTANT: Vous êtes sur le point d'envoyer des emails réels à ${recipients.length} destinataires. Voulez-vous continuer?`)) {
+        return;
+      }
+    }
+
+    // Force testMode to false
+    setBulkSettings(prevSettings => ({
+      ...prevSettings,
+      testMode: false
+    }));
     
     // Si c'est un nouvel envoi (pas une reprise)
     if (startFromIndex === 0 && !sendingStatus.id) {
@@ -701,7 +714,7 @@ const BulkEmailSender = ({ onClose, smtpConfig, initialEmailData }) => {
             htmlBody: emailData.useHtml ? htmlContent : undefined,
             useHtml: emailData.useHtml,
             senderName: smtpConfig.senderName,
-            testMode: bulkSettings.testMode || false  // Ajouter l'option testMode
+            testMode: false  // Forcer à false pour toujours envoyer de vrais emails
           };
           
           // Envoyer l'email
@@ -991,21 +1004,14 @@ const BulkEmailSender = ({ onClose, smtpConfig, initialEmailData }) => {
                 </div>
               )}
               
-              <div>
+              {/* Option de mode test modifiée pour être plus claire */}
+              <div className="bg-green-50 border border-green-200 rounded-lg p-3">
                 <div className="flex items-center">
-                  <input
-                    type="checkbox"
-                    id="testMode"
-                    checked={bulkSettings.testMode}
-                    onChange={(e) => setBulkSettings({...bulkSettings, testMode: e.target.checked})}
-                    className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
-                  />
-                  <label htmlFor="testMode" className="ml-2 text-sm font-medium text-gray-700">
-                    Mode test (simulation)
-                  </label>
+                  <Check className="w-5 h-5 text-green-600 mr-2" />
+                  <span className="font-medium text-green-700">Mode envoi réel activé</span>
                 </div>
-                <p className="text-xs text-gray-500 mt-1 ml-6">
-                  En mode test, les emails ne sont pas réellement envoyés mais simulés pour tester le processus sans consommer de quota SMTP.
+                <p className="text-xs text-green-600 mt-1 ml-7">
+                  Tous les emails seront envoyés aux destinataires réels.
                 </p>
               </div>
             </div>
@@ -1165,37 +1171,23 @@ const BulkEmailSender = ({ onClose, smtpConfig, initialEmailData }) => {
     </>
   );
 
-  // Rendu de l'étape 4: Progression de l'envoi
+  // Rendu de l'étape 4: Envoi en masse
   const renderSendingStep = () => (
     <>
-      <h2 className="text-xl font-semibold mb-4">Progression de l'envoi</h2>
+      <h2 className="text-xl font-semibold mb-4">Envoi en masse</h2>
       
-      {/* Historique des envois - placé au début pour un accès plus facile */}
+      {/* Historique des envois */}
       {sendHistory.length > 0 && (
         <div className="mb-5">
           <div className="flex justify-between items-center mb-2">
-            <h3 className="text-lg font-medium flex items-center">
-              <Clock className="w-5 h-5 mr-2 text-blue-600" />
-              Historique des envois
-            </h3>
-            <div className="flex space-x-2">
-              <button
-                onClick={cleanupHistoryErrors}
-                className="text-blue-600 hover:text-blue-800 text-sm flex items-center"
-              >
-                <RefreshCw className="w-4 h-4 mr-1" />
-                Réparer
-              </button>
-              {sendHistory.length > 0 && (
-                <button
-                  onClick={clearAllHistory}
-                  className="text-red-600 hover:text-red-800 text-sm flex items-center"
-                >
-                  <Trash className="w-4 h-4 mr-1" />
-                  Tout effacer
-                </button>
-              )}
-            </div>
+            <h3 className="text-lg font-medium">Historique des campagnes</h3>
+            <button
+              onClick={clearAllHistory}
+              className="text-sm text-red-600 hover:text-red-800 flex items-center"
+            >
+              <Trash className="w-4 h-4 mr-1" />
+              Vider l'historique
+            </button>
           </div>
           <div className="overflow-x-auto border rounded-lg">
             <table className="min-w-full divide-y divide-gray-200">
