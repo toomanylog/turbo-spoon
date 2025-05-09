@@ -32,7 +32,8 @@ const BulkEmailSender = ({ onClose, smtpConfig, initialEmailData }) => {
   const [bulkSettings, setBulkSettings] = useState({
     batchSize: 10,
     delayBetweenBatches: 5,
-    sendingMode: 'all' // 'all' ou 'batch'
+    sendingMode: 'all', // 'all' ou 'batch'
+    testMode: false     // Nouvelle option pour le mode test
   });
   const [error, setError] = useState(null);
   const [warnings, setWarnings] = useState([]);
@@ -699,7 +700,8 @@ const BulkEmailSender = ({ onClose, smtpConfig, initialEmailData }) => {
             body: !emailData.useHtml ? textContent : undefined,
             htmlBody: emailData.useHtml ? htmlContent : undefined,
             useHtml: emailData.useHtml,
-            senderName: smtpConfig.senderName
+            senderName: smtpConfig.senderName,
+            testMode: bulkSettings.testMode || false  // Ajouter l'option testMode
           };
           
           // Envoyer l'email
@@ -988,6 +990,24 @@ const BulkEmailSender = ({ onClose, smtpConfig, initialEmailData }) => {
                   <p className="text-xs text-gray-500 mt-1">Temps d'attente entre chaque lot (1-60 sec)</p>
                 </div>
               )}
+              
+              <div>
+                <div className="flex items-center">
+                  <input
+                    type="checkbox"
+                    id="testMode"
+                    checked={bulkSettings.testMode}
+                    onChange={(e) => setBulkSettings({...bulkSettings, testMode: e.target.checked})}
+                    className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                  />
+                  <label htmlFor="testMode" className="ml-2 text-sm font-medium text-gray-700">
+                    Mode test (simulation)
+                  </label>
+                </div>
+                <p className="text-xs text-gray-500 mt-1 ml-6">
+                  En mode test, les emails ne sont pas réellement envoyés mais simulés pour tester le processus sans consommer de quota SMTP.
+                </p>
+              </div>
             </div>
           </div>
         )}

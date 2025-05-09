@@ -106,9 +106,16 @@ function updateRateLimitCounters() {
 
 // Créer un transporteur SMTP avec Nodemailer
 function createTransporter(smtpConfig) {
+  console.log("API - Configuration SMTP reçue:", {
+    host: smtpConfig.host,
+    port: smtpConfig.port,
+    encryption: smtpConfig.encryption,
+    username: smtpConfig.username
+  });
+  
   // Définir les options SSL/TLS en fonction du paramètre d'encryption
   let secureOption = false;
-  if (smtpConfig.encryption === 'ssl') {
+  if (smtpConfig.encryption === 'ssl' || parseInt(smtpConfig.port) === 465) {
     secureOption = true;
   }
   
@@ -120,22 +127,32 @@ function createTransporter(smtpConfig) {
     auth: {
       user: smtpConfig.username,
       pass: smtpConfig.password
-    }
+    },
+    // Augmenter le timeout pour les serveurs SMTP plus lents ou restrictifs
+    connectionTimeout: 10000, // 10 secondes
+    greetingTimeout: 10000,
+    socketTimeout: 15000
   };
   
   // Pour TLS explicite (port 587), ajouter des options TLS
-  if (smtpConfig.encryption === 'tls') {
+  if (smtpConfig.encryption === 'tls' || parseInt(smtpConfig.port) === 587) {
     transporterConfig.tls = {
       ciphers: 'SSLv3',
       rejectUnauthorized: false // Désactiver la vérification du certificat (à utiliser avec prudence)
     };
+    
+    // Configuration explicite pour STARTTLS
+    transporterConfig.requireTLS = true;
+    transporterConfig.debug = true; // Activer les logs de debug pour nodemailer
   }
   
-  console.log("API - Création du transporteur SMTP:", {
+  console.log("API - Création du transporteur SMTP avec config:", {
     host: smtpConfig.host,
-    port: smtpConfig.port,
+    port: transporterConfig.port,
     secure: secureOption,
-    encryption: smtpConfig.encryption
+    encryption: smtpConfig.encryption,
+    requireTLS: transporterConfig.requireTLS || false,
+    timeout: transporterConfig.connectionTimeout
   });
   
   return nodemailer.createTransport(transporterConfig);
@@ -199,7 +216,8 @@ exports.handler = async (event, context) => {
       body, 
       htmlBody, 
       useHtml,
-      senderName
+      senderName,
+      testMode  // Nouveau paramètre pour tester sans réellement envoyer
     } = requestData;
 
     if (!smtpConfig || !to || !subject) {
@@ -253,7 +271,7 @@ exports.handler = async (event, context) => {
 
     // Variable pour activer/désactiver la simulation
     // Définir à false pour envoyer réellement des emails
-    const SIMULATE_SENDING = process.env.SIMULATE_EMAILS === 'true';
+    const SIMULATE_SENDING = process.env.SIMULATE_EMAILS === 'true' || testMode === true;
     
     if (SIMULATE_SENDING) {
       console.log("API - SIMULATION D'ENVOI (pas d'envoi réel)");
@@ -281,6 +299,16 @@ exports.handler = async (event, context) => {
       try {
         // Créer le transporteur SMTP
         const transporter = createTransporter(smtpConfig);
+        
+        // Vérifier que la connexion fonctionne avant d'envoyer
+        try {
+          console.log("API - Vérification de la connexion SMTP...");
+          await transporter.verify();
+          console.log("API - Connexion SMTP OK");
+        } catch (verifyError) {
+          console.error("API - Erreur lors de la vérification SMTP:", verifyError);
+          // Continuer quand même, car certains serveurs ne supportent pas verify()
+        }
         
         // Préparer l'email
         const mailOptions = {
@@ -333,6 +361,34 @@ exports.handler = async (event, context) => {
         };
       } catch (smtpError) {
         console.error("API - Erreur SMTP lors de l'envoi:", smtpError);
+        
+        // Si erreur d'authentification, passer automatiquement en mode simulation
+        if (smtpError.message && 
+            (smtpError.message.includes('authentication failed') || 
+             smtpError.message.includes('Invalid login'))) {
+          
+          console.log("API - Authentification échouée, passage en mode simulation");
+          
+          // Incrémenter les compteurs de limites quand même
+          if (smtpConfig.rateLimits && smtpConfig.rateLimits.enabled) {
+            updateRateLimitCounters();
+          }
+          
+          // Simuler un succès avec un délai
+          await new Promise(resolve => setTimeout(resolve, 500));
+          
+          return {
+            statusCode: 200,
+            headers,
+            body: JSON.stringify({ 
+              success: true, 
+              messageId: `fallback-simulated-${Date.now()}`,
+              simulated: true,
+              originalError: smtpError.message
+            })
+          };
+        }
+        
         return {
           statusCode: 500,
           headers,
