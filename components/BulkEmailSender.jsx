@@ -679,7 +679,21 @@ const BulkEmailSender = ({ onClose, smtpConfig, initialEmailData }) => {
           
           // Préparer les données pour l'API
           const emailPayload = {
-            smtpConfig,
+            smtpConfig: {
+              host: smtpConfig.host,
+              port: smtpConfig.port,
+              username: smtpConfig.username,
+              password: smtpConfig.password,
+              senderName: smtpConfig.senderName,
+              encryption: smtpConfig.encryption,
+              rateLimits: smtpConfig.rateLimits ? {
+                perSecond: smtpConfig.rateLimits.perSecond || 0,
+                perMinute: smtpConfig.rateLimits.perMinute || 0,
+                perHour: smtpConfig.rateLimits.perHour || 0,
+                perDay: smtpConfig.rateLimits.perDay || 0,
+                enabled: smtpConfig.rateLimits.enabled || false
+              } : undefined
+            },
             to: recipient.email,
             subject: parsedSubject,
             body: !emailData.useHtml ? textContent : undefined,
@@ -747,7 +761,7 @@ const BulkEmailSender = ({ onClose, smtpConfig, initialEmailData }) => {
         
         // Pause après chaque envoi pour éviter de surcharger le serveur SMTP
         console.log("Pause de 200ms entre chaque email");
-        await new Promise(resolve => setTimeout(resolve, 200));
+        await new Promise(resolve => setTimeout(resolve, 1000)); // Augmenté à 1000ms (1 seconde) pour réduire la pression sur le serveur SMTP
         
         // Enregistrer l'état actuel dans l'historique périodiquement (tous les 5 emails)
         if ((startIndex + i + 1) % 5 === 0) {
