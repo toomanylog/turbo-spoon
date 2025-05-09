@@ -104,6 +104,43 @@ function updateRateLimitCounters() {
   console.log("API - Compteurs mis à jour après envoi");
 }
 
+// Créer un transporteur SMTP avec Nodemailer
+function createTransporter(smtpConfig) {
+  // Définir les options SSL/TLS en fonction du paramètre d'encryption
+  let secureOption = false;
+  if (smtpConfig.encryption === 'ssl') {
+    secureOption = true;
+  }
+  
+  // Configuration du transporteur
+  const transporterConfig = {
+    host: smtpConfig.host,
+    port: parseInt(smtpConfig.port),
+    secure: secureOption, // true pour 465, false pour les autres ports
+    auth: {
+      user: smtpConfig.username,
+      pass: smtpConfig.password
+    }
+  };
+  
+  // Pour TLS explicite (port 587), ajouter des options TLS
+  if (smtpConfig.encryption === 'tls') {
+    transporterConfig.tls = {
+      ciphers: 'SSLv3',
+      rejectUnauthorized: false // Désactiver la vérification du certificat (à utiliser avec prudence)
+    };
+  }
+  
+  console.log("API - Création du transporteur SMTP:", {
+    host: smtpConfig.host,
+    port: smtpConfig.port,
+    secure: secureOption,
+    encryption: smtpConfig.encryption
+  });
+  
+  return nodemailer.createTransport(transporterConfig);
+}
+
 exports.handler = async (event, context) => {
   // En-têtes CORS pour permettre les requêtes cross-origin
   const headers = {
@@ -214,25 +251,99 @@ exports.handler = async (event, context) => {
       }
     }
 
-    // Pour les tests/démo, simuler un envoi réussi sans réellement envoyer
-    console.log("API - SIMULATION D'ENVOI (pas d'envoi réel)");
+    // Variable pour activer/désactiver la simulation
+    // Définir à false pour envoyer réellement des emails
+    const SIMULATE_SENDING = process.env.SIMULATE_EMAILS === 'true';
     
-    // Incrémenter les compteurs de limites
-    if (smtpConfig.rateLimits && smtpConfig.rateLimits.enabled) {
-      updateRateLimitCounters();
+    if (SIMULATE_SENDING) {
+      console.log("API - SIMULATION D'ENVOI (pas d'envoi réel)");
+      
+      // Incrémenter les compteurs de limites
+      if (smtpConfig.rateLimits && smtpConfig.rateLimits.enabled) {
+        updateRateLimitCounters();
+      }
+      
+      // Simuler un délai
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      return {
+        statusCode: 200,
+        headers,
+        body: JSON.stringify({ 
+          success: true, 
+          messageId: `simulated-${Date.now()}`
+        })
+      };
+    } else {
+      // Véritable envoi d'email
+      console.log("API - Préparation de l'envoi réel d'email");
+      
+      try {
+        // Créer le transporteur SMTP
+        const transporter = createTransporter(smtpConfig);
+        
+        // Préparer l'email
+        const mailOptions = {
+          from: senderName 
+            ? `"${senderName}" <${smtpConfig.username}>`
+            : smtpConfig.username,
+          to: to,
+          subject: subject
+        };
+        
+        // Ajouter CC et BCC si fournis
+        if (cc) mailOptions.cc = cc;
+        if (bcc) mailOptions.bcc = bcc;
+        
+        // Ajouter le contenu en fonction du format
+        if (useHtml) {
+          mailOptions.html = htmlBody;
+          // Ajouter une version texte plain pour la compatibilité
+          if (body) {
+            mailOptions.text = body;
+          }
+        } else {
+          mailOptions.text = body;
+        }
+        
+        console.log("API - Options d'email préparées:", {
+          from: mailOptions.from,
+          to: mailOptions.to,
+          subject: mailOptions.subject,
+          hasHtml: !!mailOptions.html,
+          hasText: !!mailOptions.text
+        });
+        
+        // Envoyer l'email
+        const info = await transporter.sendMail(mailOptions);
+        console.log("API - Email envoyé avec succès:", info.messageId);
+        
+        // Incrémenter les compteurs de limites
+        if (smtpConfig.rateLimits && smtpConfig.rateLimits.enabled) {
+          updateRateLimitCounters();
+        }
+        
+        return {
+          statusCode: 200,
+          headers,
+          body: JSON.stringify({ 
+            success: true, 
+            messageId: info.messageId
+          })
+        };
+      } catch (smtpError) {
+        console.error("API - Erreur SMTP lors de l'envoi:", smtpError);
+        return {
+          statusCode: 500,
+          headers,
+          body: JSON.stringify({ 
+            success: false, 
+            error: `Erreur SMTP: ${smtpError.message}`,
+            details: smtpError.response || null
+          })
+        };
+      }
     }
-    
-    // Toujours retourner un JSON valide avec un délai simulé
-    await new Promise(resolve => setTimeout(resolve, 500));
-    
-    return {
-      statusCode: 200,
-      headers,
-      body: JSON.stringify({ 
-        success: true, 
-        messageId: `simulated-${Date.now()}`
-      })
-    };
     
   } catch (error) {
     console.error("API - Erreur lors du traitement de la requête:", error);
